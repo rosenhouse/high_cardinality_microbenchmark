@@ -25,3 +25,9 @@ m3_benchindex: setup
 
 flatfile_generate: setup
 	cd cmd/flatfile_generate && go run main/main.go -dir $(TESTDATA_FLATFILE_DIR)
+
+flatfile_grep_benchindex: setup
+	grep '"pod":"abc' $(TESTDATA_FLATFILE_DIR)/samples.json | wc -l
+
+flatfile_rg_benchindex: setup
+	rg '"pod":"abc' $(TESTDATA_FLATFILE_DIR)/samples.json | wc -l
