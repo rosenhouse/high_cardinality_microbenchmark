@@ -63,6 +63,8 @@ func main() {
 	gen := generator.NewHostsSimulator(10000, start,
 		generator.HostsSimulatorOptions{TimeNowFn: timeNowFn})
 
+	genStartTime := time.Now()
+	logger.Info("starting generate loop")
 TopLoop:
 	for {
 		ts, err := gen.Generate(10*time.Second, 10*time.Second, 1.0)
@@ -122,7 +124,8 @@ TopLoop:
 	// To keep chunk range the normal prometheus amount
 	end = hardEnd
 
-	logger.Info("writing block", zap.Int("samples", len(samples)))
+	logger.Info("writing block", zap.Int("samples", len(samples)), zap.Duration("gen-time", time.Since(genStartTime)))
+	blockWriteStartTime := time.Now()
 
 	kitLogger := kitlogzap.NewZapSugarLogger(logger, zapcore.InfoLevel)
 	name, err := tsdb.CreateBlock(samples, dir,
@@ -131,5 +134,5 @@ TopLoop:
 		logger.Fatal("could not create block", zap.Error(err))
 	}
 
-	logger.Info("created block", zap.String("name", name))
+	logger.Info("created block", zap.String("name", name), zap.Duration("write-time", time.Since(blockWriteStartTime)))
 }

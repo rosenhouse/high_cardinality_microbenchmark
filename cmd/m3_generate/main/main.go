@@ -116,6 +116,10 @@ func main() {
 		tags      = models.NewTags(0, tagOpts)
 		documents int
 	)
+
+	genStartTime := time.Now()
+	logger.Info("starting generate loop")
+
 TopLoop:
 	for {
 		ts, err := gen.Generate(10*time.Second, 10*time.Second, 1.0)
@@ -165,6 +169,10 @@ TopLoop:
 		}
 	}
 
+	logger.Info("block inserts done", zap.Duration("gen-time", time.Since(genStartTime)))
+
+	blockWriteStartTime := time.Now()
+
 	preparedPersist, err := flush.PrepareIndex(persist.IndexPrepareOptions{
 		NamespaceMetadata: ns,
 		BlockStart:        start,
@@ -182,4 +190,6 @@ TopLoop:
 	if _, err := preparedPersist.Close(); err != nil {
 		logger.Fatal("unable to close persist", zap.Error(err))
 	}
+
+	logger.Info("block persisted", zap.Duration("write-time", time.Since(blockWriteStartTime)))
 }
