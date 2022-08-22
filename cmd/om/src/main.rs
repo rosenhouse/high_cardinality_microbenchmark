@@ -1,8 +1,10 @@
-use clap::Parser;
-use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::BufReader;
+
+use clap::Parser;
+use roaring::RoaringBitmap;
+use serde::Deserialize;
 
 /// Ordered map indexer
 #[derive(Parser)]
@@ -42,43 +44,8 @@ struct Search {
     pub value_prefix: String,
 }
 
-struct Index {
-    pub label_keys: HashMap<String, u8>,
-    pub label_values: HashMap<String, u32>,
-    pub timeseries_name_to_id: HashMap<String, u32>,
-    pub num_timeseries: u32,
-}
-
-impl Index {
-    pub fn new() -> Index {
-        Index {
-            label_keys: HashMap::new(),
-            label_values: HashMap::new(),
-            timeseries_name_to_id: HashMap::new(),
-            num_timeseries: 0,
-        }
-    }
-    pub fn get_or_create_timeseries_id(&mut self, timeseries_name: String) -> u32 {
-        *(self
-            .timeseries_name_to_id
-            .entry(timeseries_name)
-            .or_insert_with(|| {
-                let id = self.num_timeseries;
-                self.num_timeseries += 1;
-                id
-            }))
-    }
-}
-
 #[derive(Deserialize, Debug)]
 struct Labels(BTreeMap<String, String>);
-
-fn get_timeseries_name(l: Labels) -> String {
-    l.0.into_iter()
-        .map(|(k, v)| k + "=" + &v)
-        .reduce(|acc, n| acc + "|" + &n)
-        .unwrap()
-}
 
 #[derive(Deserialize, Debug)]
 struct MetricSample {
@@ -92,6 +59,59 @@ struct MetricSample {
     pub labels: Labels,
 }
 
+struct Index {
+    pub timeseries_name_to_id: HashMap<String, u32>,
+    pub num_timeseries: u32,
+    pub single_label_bitmaps: BTreeMap<(String,String), RoaringBitmap>,
+}
+
+impl Index {
+    pub fn new() -> Index {
+        Index {
+            timeseries_name_to_id: HashMap::new(),
+            num_timeseries: 0,
+            single_label_bitmaps : BTreeMap::new(),
+        }
+    }
+
+    // gets existing timeseries id, or creates a new timeseries id, for a
+    // metric sample with the provided labels.  Updates inverted indexes if necessary.
+    pub fn get_timeseries_id(&mut self, labels: Labels) -> u32 {
+        let l = labels.0;
+        let full_name = (&l).into_iter().map(|(k, v)| k.to_owned() + "=" + &v).reduce(|acc, n| acc + "|" + &n) .unwrap();
+
+        let timeseries_id = *(self
+            .timeseries_name_to_id
+            .entry(full_name.to_owned())
+            .or_insert_with(|| {
+                let id = self.num_timeseries;
+                self.num_timeseries += 1;
+                id
+            }));
+
+        for label_pair in l.into_iter() {
+            let bitmap = self.single_label_bitmaps.entry(label_pair).or_default();
+            bitmap.insert(timeseries_id);
+        }
+
+        timeseries_id
+    }
+
+    pub fn search(&self) {
+        let key_range_start = ("pod".to_owned(), "abc".to_owned());
+        let key_range_end = ("pod".to_owned(), "abd".to_owned());
+        let mut n = 0;
+        let start_time = std::time::Instant::now();
+        for (key, value) in self.single_label_bitmaps.range(key_range_start .. key_range_end) {
+            // println!("{:?}: {:?}", key, &value.len());
+            n += 1
+        }
+        let elapsed = start_time.elapsed();
+        println!("found {} matching in {} seconds", n, elapsed.as_secs_f32());
+    }
+}
+
+
 fn build(source_file: String, _index_file: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut index = Index::new();
     let source_file = File::open(source_file)?;
@@ -100,14 +120,16 @@ fn build(source_file: String, _index_file: String) -> Result<(), Box<dyn std::er
         .into_iter::<MetricSample>()
         .map(|x| x.unwrap());
     for m in metrics {
-        let name = get_timeseries_name(m.labels);
-        let id = index.get_or_create_timeseries_id(name);
+        let id = index.get_timeseries_id(m.labels);
         if (id + 1) % 100000 == 0 {
             println!("timeseries {}", id + 1);
         }
     }
+    index.search();
     Ok(())
 }
+
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmdline: CmdLine = CmdLine::parse();
     match cmdline.subcmd {
