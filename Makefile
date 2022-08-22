@@ -3,6 +3,7 @@ ROOT_DIR := $(shell pwd)
 TESTDATA_DIR := $(ROOT_DIR)/testdata
 TESTDATA_PROM_DIR := $(TESTDATA_DIR)/prom
 TESTDATA_M3_DIR := $(TESTDATA_DIR)/m3
+TESTDATA_FLATFILE_DIR := $(TESTDATA_DIR)/flat
 
 clean:
 	rm -rf $(TESTDATA_DIR)
@@ -21,3 +22,6 @@ m3_generate: setup
 
 m3_benchindex: setup
 	cd cmd/m3_benchindex && go run main/main.go -dir $(TESTDATA_M3_DIR)
+
+flatfile_generate: setup
+	cd cmd/flatfile_generate && go run main/main.go -dir $(TESTDATA_FLATFILE_DIR)
