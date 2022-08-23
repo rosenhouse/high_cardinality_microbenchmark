@@ -111,6 +111,7 @@ impl DB {
         }
         drop(timeseries_file);
 
+        let mut serialized_sizes = Vec::new();
         let mut index_file = DB::new_buf_writer(&out_file, "index")?;
         for ((tag_key, tag_val), bitmap) in self.single_label_bitmaps {
             let mut d = TagIndex {
@@ -118,10 +119,18 @@ impl DB {
                 v: tag_val,
                 b: vec![],
             };
+            serialized_sizes.push(bitmap.serialized_size());
             bitmap.serialize_into(&mut d.b)?;
             serde_json::ser::to_writer(&mut index_file, &d)?;
+            index_file.write_all(&[b'\n'])?;
         }
         drop(index_file);
+
+        let mut sizes_file = DB::new_buf_writer(&out_file, "bitmap-sizes")?;
+        for s in serialized_sizes {
+            writeln!(sizes_file, "{}", s)?;
+        }
+        drop(sizes_file);
 
         Ok(())
     }
