@@ -81,6 +81,14 @@ impl DB {
         }
     }
 
+    pub fn save(&self, out_file: String) -> Result<(), Box<dyn std::error::Error>> {
+        todo!();
+    }
+
+    pub fn load(in_file: String) -> Result<DB, Box<dyn std::error::Error>> {
+        todo!();
+    }
+
     // gets existing timeseries id, or creates a new timeseries id, for a
     // metric sample with the provided labels.  Updates inverted indexes if necessary.
     fn get_timeseries_id(&mut self, labels: Labels) -> u32 {
