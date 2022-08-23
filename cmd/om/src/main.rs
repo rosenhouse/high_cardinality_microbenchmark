@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 use clap::Parser;
 use roaring::RoaringBitmap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Ordered map indexer
 #[derive(Parser)]
@@ -59,16 +60,19 @@ struct MetricSample {
     pub labels: Labels,
 }
 
-struct Sample {
-    pub timestamp_ms: i64,
-    pub value: f64,
-}
-
 struct DB {
     pub timeseries_name_to_id: HashMap<String, u32>,
     pub num_timeseries: u32,
     pub single_label_bitmaps: BTreeMap<(String, String), RoaringBitmap>,
-    pub naive_column_store: Vec<Vec<Sample>>,
+    pub naive_column_store: Vec<Vec<(i64, f64)>>,
+}
+
+// on-disk representation of items in single_label_bitmaps
+#[derive(Serialize, Deserialize)]
+struct TagIndex {
+    k: String,
+    v: String,
+    b: Vec<u8>,
 }
 
 impl DB {
@@ -81,12 +85,83 @@ impl DB {
         }
     }
 
-    pub fn save(&self, out_file: String) -> Result<(), Box<dyn std::error::Error>> {
-        todo!();
+    fn new_buf_writer(base_file: &str, suffix: &str) -> Result<BufWriter<File>, Box<dyn Error>> {
+        Ok(BufWriter::new(File::create(format!(
+            "{}.{}",
+            base_file, suffix
+        ))?))
     }
 
-    pub fn load(in_file: String) -> Result<DB, Box<dyn std::error::Error>> {
-        todo!();
+    pub fn save_and_close(self: Self, out_file: String) -> Result<(), Box<dyn Error>> {
+        let mut ts_names: Vec<String> = vec!["".to_owned(); self.timeseries_name_to_id.len()];
+        for (name, idx) in self.timeseries_name_to_id {
+            ts_names[idx as usize] = name;
+        }
+        let mut names_file = DB::new_buf_writer(&out_file, "names")?;
+        for name in ts_names {
+            writeln!(names_file, "{}", name)?;
+        }
+        drop(names_file);
+
+        let mut timeseries_file = DB::new_buf_writer(&out_file, "timeseries")?;
+        for ts in self.naive_column_store {
+            serde_json::ser::to_writer(&mut timeseries_file, &ts)?;
+            timeseries_file.write_all(&[b'\n'])?;
+        }
+        drop(timeseries_file);
+
+        let mut index_file = DB::new_buf_writer(&out_file, "index")?;
+        for ((tag_key, tag_val), bitmap) in self.single_label_bitmaps {
+            let mut d = TagIndex {
+                k: tag_key,
+                v: tag_val,
+                b: vec![],
+            };
+            bitmap.serialize_into(&mut d.b)?;
+            serde_json::ser::to_writer(&mut index_file, &d)?;
+        }
+        drop(index_file);
+
+        Ok(())
+    }
+
+    fn new_buf_reader(base_file: &str, suffix: &str) -> Result<BufReader<File>, Box<dyn Error>> {
+        Ok(BufReader::new(File::open(format!(
+            "{}.{}",
+            base_file, suffix
+        ))?))
+    }
+
+    pub fn load(in_file: String) -> Result<DB, Box<dyn Error>> {
+        let mut timeseries_name_to_id: HashMap<String, u32> = HashMap::new();
+        let mut num_timeseries = 0u32;
+        for l in DB::new_buf_reader(&in_file, "names")?.lines() {
+            timeseries_name_to_id.insert(l.unwrap(), num_timeseries);
+            num_timeseries += 1;
+        }
+
+        let mut naive_column_store = Vec::new();
+        let ts_reader = DB::new_buf_reader(&in_file, "timeseries")?;
+        let dser = serde_json::Deserializer::from_reader(ts_reader).into_iter::<Vec<(i64, f64)>>();
+        for rec in dser {
+            naive_column_store.push(rec?);
+        }
+
+        let mut single_label_bitmaps = BTreeMap::new();
+        let index_file = DB::new_buf_reader(&in_file, "index")?;
+        let dser = serde_json::Deserializer::from_reader(index_file).into_iter::<TagIndex>();
+        for rec in dser {
+            let rec = rec.unwrap();
+            let bitmap = RoaringBitmap::deserialize_from(&rec.b[..])?;
+            single_label_bitmaps.insert((rec.k, rec.v), bitmap);
+        }
+
+        Ok(DB {
+            timeseries_name_to_id,
+            num_timeseries,
+            single_label_bitmaps,
+            naive_column_store,
+        })
     }
 
     // gets existing timeseries id, or creates a new timeseries id, for a
@@ -118,10 +193,7 @@ impl DB {
     }
 
     pub fn ingest(&mut self, s: MetricSample) -> u32 {
-        let sample = Sample {
-            timestamp_ms: s.timestamp_ms,
-            value: s.value,
-        };
+        let sample = (s.timestamp_ms, s.value);
         let ts_id = self.get_timeseries_id(s.labels);
         self.naive_column_store[ts_id as usize].push(sample);
         ts_id
@@ -144,7 +216,7 @@ impl DB {
     }
 }
 
-fn build(source_file: String, _index_file: String) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_build(source_file: String, index_file: String) -> Result<(), Box<dyn Error>> {
     let mut db = DB::new();
     let source_file = File::open(source_file)?;
     let source_reader = BufReader::new(source_file);
@@ -155,14 +227,19 @@ fn build(source_file: String, _index_file: String) -> Result<(), Box<dyn std::er
             println!("timeseries {}", id + 1);
         }
     }
+    db.save_and_close(index_file)
+}
+
+fn cmd_search(index_file: String) -> Result<(), Box<dyn Error>> {
+    let db = DB::load(index_file)?;
     db.search();
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let cmdline: CmdLine = CmdLine::parse();
     match cmdline.subcmd {
-        SubCommand::Build(o) => build(o.source_file, cmdline.file),
-        _ => todo!(),
+        SubCommand::Build(o) => cmd_build(o.source_file, cmdline.file),
+        SubCommand::Search(_) => cmd_search(cmdline.file),
     }
 }
