@@ -86,6 +86,7 @@ impl DB {
     }
 
     fn new_buf_writer(base_file: &str, suffix: &str) -> Result<BufWriter<File>, Box<dyn Error>> {
+        std::fs::create_dir_all(std::path::Path::new(base_file).parent().unwrap())?;
         Ok(BufWriter::new(File::create(format!(
             "{}.{}",
             base_file, suffix
